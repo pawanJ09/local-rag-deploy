@@ -1,0 +1,28 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+
+  backend:
+    image: ghcr.io/${GHCR_OWNER}/local-rag-backend:${BACKEND_TAG}
+    environment:
+      OLLAMA_URL: http://ollama:11434
+    volumes:
+      - ${DOCS_PATH}:/data/docs:ro      # Your documents folder (read-only)
+      - ./chroma_data:/data/chroma           # Saved vectors
+    depends_on:
+      - ollama
+    ports:
+      - "8000:8000"                     # PLACEHOLDER: use your backend port
+
+  ui:
+    image: ghcr.io/${GHCR_OWNER}/local-rag-ui:${UI_TAG}
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"                       # PLACEHOLDER: use your UI port
+
+volumes:
+  ollama_data:
+  rag_data:
