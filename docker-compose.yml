@@ -10,7 +10,7 @@ services:
       OLLAMA_URL: http://ollama:11434
     volumes:
       - ${DOCS_PATH}:/data/docs:ro      # Your documents folder (read-only)
-      - ./chroma_data:/data/chroma           # Saved vectors
+      - rag_data:/data/chroma           # Saved vectors
     depends_on:
       - ollama
     ports:
