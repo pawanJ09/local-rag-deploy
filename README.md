@@ -73,8 +73,8 @@ nothing is sent to the internet while you use it.
 3. Edit `BACKEND_VERSION` and `UI_VERSION` in `.env.example` if you want the kit
    pinned to specific versions instead of `latest`.
 4. Push a tag such as `v1.0.0`. The `release-kit` workflow attaches the kit zip
-   (compose file, README and `.env.example`) to the release, with your username
-   filled into `docker-compose.yml`.
+   (compose file, README and `.env.example`) to the release. It checks the compose
+   file is valid first.
 5. The `test-stack` workflow runs on every push and pull request. It starts the
    published images, ingests a sample file and asks one question.
 6. `make save` writes `local-rag-images.tar` for a computer that cannot reach the

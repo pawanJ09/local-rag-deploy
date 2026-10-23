@@ -1,0 +1,94 @@
+name: test-stack
+
+# Starts the whole stack from the PUBLISHED images and checks it works.
+# It never publishes anything. The backend and UI images must already be on
+# ghcr.io and set to Public (see README).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast check, no images pulled. The compose file refuses to start without an
+  # API_KEY, so this step supplies a throwaway one.
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        env:
+          API_KEY: ci-validation-only
+        run: docker compose config --quiet
+
+  stack:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare settings and a sample document
+        run: |
+          cat > .env <<EOF
+          API_KEY=ci-test-key
+          LLM_MODEL=llama3.2:1b
+          EOF
+          mkdir -p docs
+          echo "The office guest wifi network is called Maple42 and it is changed every Monday." > docs/wifi.txt
+
+      - name: Start the stack
+        run: docker compose up -d
+
+      - name: Wait until the backend reports healthy
+        run: |
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8000/health | grep -q '"status":"ok"'; then
+              echo "backend healthy"; exit 0
+            fi
+            sleep 5
+          done
+          echo "Backend did not become healthy"; exit 1
+
+      - name: UI is served and has runtime settings
+        run: |
+          curl -sf http://127.0.0.1:3000/ | grep -q 'id="root"'
+          curl -sf http://127.0.0.1:3000/config.js | grep -q 'apiBaseUrl'
+
+      - name: CORS allows the UI address
+        run: |
+          curl -si http://127.0.0.1:8000/health -H "Origin: http://localhost:3000" \
+            | grep -i "access-control-allow-origin: http://localhost:3000"
+
+      - name: Ingest the sample document
+        run: |
+          JOB=$(curl -sf -X POST http://127.0.0.1:8000/ingest -H "X-API-Key: ci-test-key" | jq -r .job_id)
+          for i in $(seq 1 60); do
+            STATUS=$(curl -sf "http://127.0.0.1:8000/ingest/status/$JOB" -H "X-API-Key: ci-test-key" | jq -r .status)
+            echo "ingest: $STATUS"
+            [ "$STATUS" = "completed" ] && exit 0
+            [ "$STATUS" = "failed" ] && exit 1
+            sleep 5
+          done
+          echo "Ingest timed out"; exit 1
+
+      - name: Ask one real question
+        run: |
+          RESP=$(curl -sf -X POST http://127.0.0.1:8000/query \
+            -H "X-API-Key: ci-test-key" -H "Content-Type: application/json" \
+            -d '{"question": "What is the office guest wifi network called?"}')
+          echo "$RESP" | jq .
+          echo "$RESP" | jq -e '(.grounded | type) == "boolean" and (.sources | length) > 0'
+
+      - name: Show logs if something failed
+        if: failure()
+        run: docker compose logs --no-color --tail=200
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

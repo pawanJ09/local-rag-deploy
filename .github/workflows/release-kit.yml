@@ -1,0 +1,34 @@
+name: release-kit
+
+# When you push a version tag like v1.0.0, this bundles the kit (compose file,
+# README and .env.example) into a downloadable zip on the GitHub Release page.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        env:
+          API_KEY: ci-validation-only
+        run: docker compose config --quiet
+
+      - name: Build the kit zip
+        run: |
+          mkdir kit
+          cp docker-compose.yml .env.example README.md kit/
+          (cd kit && zip -r "../local-rag-kit-${{ github.ref_name }}.zip" .)
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: local-rag-kit-${{ github.ref_name }}.zip
+          generate_release_notes: true
