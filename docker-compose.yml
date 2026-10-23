@@ -1,28 +1,109 @@
+# local-rag kit: runs the whole app from published images. No source code here.
+#   ollama       runs the AI models locally
+#   model-puller downloads the two models the first time (skips them later)
+#   backend      the API (ingest, search, answer)
+#   ui           the web page, on http://localhost:3000
+#
+# The images come from the publisher's GitHub Container Registry (ghcr.io/pawanj09).
+name: local-rag
+
 services:
   ollama:
     image: ollama/ollama:latest
     volumes:
       - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+    # Mac (Docker Desktop) runs models on the CPU only: slower but works.
+    # On Linux with an NVIDIA GPU you can enable the GPU by uncommenting:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+  model-puller:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+    entrypoint: ["/bin/sh", "-c"]
+    # Downloads a model only if it is missing, so later starts work offline.
+    command:
+      - |
+        for m in "$$EMBEDDING_MODEL" "$$LLM_MODEL"; do
+          if ollama show "$$m" >/dev/null 2>&1; then
+            echo "$$m is already downloaded"
+          else
+            echo "Downloading $$m (first run only, needs internet)"
+            ollama pull "$$m" || exit 1
+          fi
+        done
+    restart: "no"
 
   backend:
-    image: ghcr.io/${GHCR_OWNER}/local-rag-backend:${BACKEND_TAG}
-    environment:
-      OLLAMA_URL: http://ollama:11434
-    volumes:
-      - ${DOCS_PATH}:/data/docs:ro      # Your documents folder (read-only)
-      - rag_data:/data/chroma           # Saved vectors
+    image: ghcr.io/pawanj09/local-rag-backend:${BACKEND_VERSION:-latest}
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
+      model-puller:
+        condition: service_completed_successfully
+    volumes:
+      - ${DOCS_HOST_DIR:-./docs}:/data/docs:ro
+      - chroma_data:/data/chroma
     ports:
-      - "8000:8000"                     # PLACEHOLDER: use your backend port
+      # Only this computer can reach it. Remove "127.0.0.1:" to share on your network.
+      - "127.0.0.1:8000:8000"
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-nomic-embed-text}
+      - LLM_MODEL=${LLM_MODEL:-llama3.1:8b}
+      - EMBEDDING_QUERY_PREFIX=${EMBEDDING_QUERY_PREFIX-search_query}
+      - EMBEDDING_DOCUMENT_PREFIX=${EMBEDDING_DOCUMENT_PREFIX-search_document}
+      - CHROMA_DIR=/data/chroma
+      - ANONYMIZED_TELEMETRY=False
+      - DOCS_DIR=/data/docs
+      - API_KEY=${API_KEY:?Set API_KEY in .env}
+      - ALLOWED_ORIGINS=http://localhost:3000
+      - TOP_K=${TOP_K:-5}
+      - SIMILARITY_DISTANCE_THRESHOLD=${SIMILARITY_DISTANCE_THRESHOLD:-0.45}
+      - CHUNK_SIZE=${CHUNK_SIZE:-800}
+      - CHUNK_OVERLAP=${CHUNK_OVERLAP:-150}
+      - ALLOWED_EXTENSIONS=${ALLOWED_EXTENSIONS:-.txt,.md,.pdf,.docx}
+      - EMBED_INCLUDE_PATH=${EMBED_INCLUDE_PATH:-false}
+      - PATH_AS_EVIDENCE=${PATH_AS_EVIDENCE:-false}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
 
   ui:
-    image: ghcr.io/${GHCR_OWNER}/local-rag-ui:${UI_TAG}
+    image: ghcr.io/pawanj09/local-rag-ui:${UI_VERSION:-latest}
     depends_on:
-      - backend
+      backend:
+        condition: service_started
     ports:
-      - "3000:80"                       # PLACEHOLDER: use your UI port
+      - "127.0.0.1:3000:80"
+    environment:
+      # The browser (not the container) calls the backend, so this is a host address.
+      - API_BASE_URL=http://localhost:8000
+      - API_KEY=${API_KEY:?Set API_KEY in .env}
+    restart: unless-stopped
 
 volumes:
   ollama_data:
-  rag_data:
+  chroma_data:
